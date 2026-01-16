@@ -1,0 +1,8 @@
+{
+  "name": "WhisperLine",
+  "description": "A privacy-first, low-latency secure communication app featuring end-to-end encrypted messaging, audio, and video calls with local cryptographic identity.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ]
+}

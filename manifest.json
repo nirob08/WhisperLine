@@ -1,0 +1,17 @@
+
+{
+  "short_name": "WhisperLine",
+  "name": "WhisperLine - Secure Communication",
+  "icons": [
+    {
+      "src": "https://api.dicebear.com/7.x/pixel-art/svg?seed=WhisperIcon",
+      "type": "image/svg+xml",
+      "sizes": "512x512",
+      "purpose": "any maskable"
+    }
+  ],
+  "start_url": ".",
+  "display": "standalone",
+  "theme_color": "#0a0a0a",
+  "background_color": "#0a0a0a"
+}
