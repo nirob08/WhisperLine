@@ -1,5 +1,6 @@
 
 import React, { useState, useEffect, useRef } from 'react';
+import { Analytics } from '@vercel/analytics/react';
 import { AppScreen, UserProfile, Message, CallState, NetworkStats } from './types';
 import { cryptoService } from './services/crypto';
 import { signalingService } from './services/signaling';
@@ -616,14 +617,17 @@ const App: React.FC = () => {
   );
 
   return (
-    <div className="max-w-md mx-auto h-screen border-x border-neutral-900 shadow-2xl overflow-hidden bg-black">
-      {currentScreen === AppScreen.ONBOARDING && renderOnboarding()}
-      {currentScreen === AppScreen.CHAT_LIST && renderChatList()}
-      {currentScreen === AppScreen.CHAT_DETAIL && renderChatDetail()}
-      {currentScreen === AppScreen.CALL && renderCall()}
-      {currentScreen === AppScreen.SETTINGS && renderSettings()}
-      {currentScreen === AppScreen.EDIT_PROFILE && renderEditProfile()}
-    </div>
+    <>
+      <div className="max-w-md mx-auto h-screen border-x border-neutral-900 shadow-2xl overflow-hidden bg-black">
+        {currentScreen === AppScreen.ONBOARDING && renderOnboarding()}
+        {currentScreen === AppScreen.CHAT_LIST && renderChatList()}
+        {currentScreen === AppScreen.CHAT_DETAIL && renderChatDetail()}
+        {currentScreen === AppScreen.CALL && renderCall()}
+        {currentScreen === AppScreen.SETTINGS && renderSettings()}
+        {currentScreen === AppScreen.EDIT_PROFILE && renderEditProfile()}
+      </div>
+      <Analytics />
+    </>
   );
 };
 
