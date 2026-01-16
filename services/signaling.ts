@@ -1,117 +1,128 @@
 
+import { Peer, DataConnection } from 'peerjs';
 import { UserProfile, Message } from '../types';
 
 /**
- * Signaling Server Simulation
- * Enhanced to allow "Direct Peer Discovery" via username.
+ * Real-time P2P Signaling Service using PeerJS.
+ * This replaces the local-only simulation with actual network connectivity.
  */
 
-const STORAGE_KEY_REGISTRY = 'whisperline_registry';
-const STORAGE_KEY_QUEUED_MESSAGES = 'whisperline_queued_messages';
+class SignalingService {
+  private peer: Peer | null = null;
+  private connections: Map<string, DataConnection> = new Map();
+  private onMessageCallback: ((msg: Message) => void) | null = null;
+  private onCallCallback: ((type: 'audio' | 'video', from: string) => void) | null = null;
 
-const SEED_USERS: UserProfile[] = [
-  {
-    username: 'support',
-    publicKey: 'pub_whisper_official',
-    displayName: 'Whisper Support',
-    bio: 'End-to-end encrypted support node.',
-    avatarSeed: 'support',
-    createdAt: Date.now()
+  // Unique prefix to avoid collisions on the public PeerJS server
+  private ID_PREFIX = 'wline_v2_';
+
+  init(username: string, onMessage: (msg: Message) => void, onCall: (type: 'audio' | 'video', from: string) => void) {
+    this.onMessageCallback = onMessage;
+    this.onCallCallback = onCall;
+
+    if (this.peer) return;
+
+    this.peer = new Peer(`${this.ID_PREFIX}${username.toLowerCase()}`);
+
+    this.peer.on('open', (id) => {
+      console.log('My peer ID is: ' + id);
+    });
+
+    this.peer.on('connection', (conn) => {
+      this.setupConnection(conn);
+    });
+
+    this.peer.on('call', (call) => {
+      // In a real app, we'd handle the stream here. For now, we signal the UI.
+      const from = call.peer.replace(this.ID_PREFIX, '');
+      this.onCallCallback?.('video', from);
+    });
+
+    this.peer.on('error', (err) => {
+      console.error('PeerJS Error:', err);
+    });
   }
-];
 
-export const signalingService = {
-  _init() {
-    const existing = localStorage.getItem(STORAGE_KEY_REGISTRY);
-    if (!existing) {
-      localStorage.setItem(STORAGE_KEY_REGISTRY, JSON.stringify(SEED_USERS));
-    }
-  },
+  private setupConnection(conn: DataConnection) {
+    const remoteUsername = conn.peer.replace(this.ID_PREFIX, '');
+    this.connections.set(remoteUsername, conn);
 
-  async registerUser(profile: UserProfile): Promise<boolean> {
-    this._init();
-    const registry: UserProfile[] = JSON.parse(localStorage.getItem(STORAGE_KEY_REGISTRY) || '[]');
-    if (registry.some(u => u.username === profile.username)) return false;
-    registry.push(profile);
-    localStorage.setItem(STORAGE_KEY_REGISTRY, JSON.stringify(registry));
-    return true;
-  },
+    conn.on('data', (data: any) => {
+      if (this.onMessageCallback) {
+        this.onMessageCallback(data as Message);
+      }
+    });
 
-  async updateUser(oldUsername: string, updatedProfile: UserProfile): Promise<boolean> {
-    const registry: UserProfile[] = JSON.parse(localStorage.getItem(STORAGE_KEY_REGISTRY) || '[]');
-    const index = registry.findIndex(u => u.username === oldUsername);
-    if (index !== -1) {
-      registry[index] = updatedProfile;
-      localStorage.setItem(STORAGE_KEY_REGISTRY, JSON.stringify(registry));
-      return true;
-    }
-    return false;
-  },
+    conn.on('close', () => {
+      this.connections.delete(remoteUsername);
+    });
+  }
 
   async searchUsers(query: string): Promise<UserProfile[]> {
-    this._init();
-    const registry: UserProfile[] = JSON.parse(localStorage.getItem(STORAGE_KEY_REGISTRY) || '[]');
-    const results = registry.filter(u => u.username.toLowerCase().includes(query.toLowerCase()));
+    // In P2P, we "discover" by attempting to connect or via a simplified result
+    if (query.length < 3) return [];
     
-    // Logic: If user types a specific username not in registry, "discover" it
-    if (results.length === 0 && query.length >= 3) {
-      return [{
-        username: query.toLowerCase().trim(),
-        publicKey: `pub_ext_${query}`,
-        displayName: query,
-        avatarSeed: query,
-        createdAt: Date.now(),
-        bio: "Remote Identity Discovered"
-      }];
+    // Simulate finding a user. In reality, PeerJS doesn't have a public "search" list for privacy.
+    // We treat the query as a direct ID.
+    return [{
+      username: query.toLowerCase().trim(),
+      publicKey: `pub_${query}`,
+      displayName: query,
+      avatarSeed: query,
+      createdAt: Date.now(),
+      bio: "Global Identity Node"
+    }];
+  }
+
+  async connectToUser(username: string): Promise<boolean> {
+    if (!this.peer) return false;
+    const targetId = `${this.ID_PREFIX}${username.toLowerCase()}`;
+    
+    if (this.connections.has(username)) return true;
+
+    const conn = this.peer.connect(targetId);
+    return new Promise((resolve) => {
+      conn.on('open', () => {
+        this.setupConnection(conn);
+        resolve(true);
+      });
+      setTimeout(() => resolve(false), 5000); // Timeout after 5s
+    });
+  }
+
+  async sendMessage(msg: Message): Promise<void> {
+    let conn = this.connections.get(msg.recipient);
+    
+    if (!conn) {
+      const connected = await this.connectToUser(msg.recipient);
+      if (connected) {
+        conn = this.connections.get(msg.recipient);
+      }
     }
-    return results;
-  },
+
+    if (conn && conn.open) {
+      conn.send(msg);
+    } else {
+      console.error('Could not send message: Connection not open');
+    }
+  }
+
+  async registerUser(profile: UserProfile): Promise<boolean> {
+    // In PeerJS mode, "registration" is just saving locally
+    localStorage.setItem('whisperline_current_user', JSON.stringify(profile));
+    return true;
+  }
 
   async findOrCreateUser(username: string): Promise<UserProfile> {
-    this._init();
-    const registry: UserProfile[] = JSON.parse(localStorage.getItem(STORAGE_KEY_REGISTRY) || '[]');
-    const existing = registry.find(u => u.username === username);
-    if (existing) return existing;
-
-    const newUser: UserProfile = {
+    return {
       username: username.toLowerCase(),
-      publicKey: `pub_remote_${Math.random().toString(36).substr(2, 5)}`,
+      publicKey: `pub_${username}`,
       displayName: username,
       avatarSeed: username,
       createdAt: Date.now(),
-      bio: "Identity Link Active"
+      bio: "Found via P2P Link"
     };
-    registry.push(newUser);
-    localStorage.setItem(STORAGE_KEY_REGISTRY, JSON.stringify(registry));
-    return newUser;
-  },
-
-  async sendMessage(msg: Message): Promise<void> {
-    const queue: Message[] = JSON.parse(localStorage.getItem(STORAGE_KEY_QUEUED_MESSAGES) || '[]');
-    queue.push({ ...msg, status: 'delivered' });
-    localStorage.setItem(STORAGE_KEY_QUEUED_MESSAGES, JSON.stringify(queue));
-    
-    // Simulate an auto-reply for better UX in a single-device demo
-    if (msg.recipient === 'support') {
-      setTimeout(() => {
-        const reply: Message = {
-          id: Math.random().toString(36).substr(2, 9),
-          sender: 'support',
-          recipient: msg.sender,
-          content: 'encrypted_SGVsbG8hIFdlIGhhdmUgcmVjZWl2ZWQgeW91ciBzZWN1cmUgbWVzc2FnZS4=_via_whisper',
-          timestamp: Date.now(),
-          status: 'sent',
-          type: 'text'
-        };
-        const currentQueue: Message[] = JSON.parse(localStorage.getItem(STORAGE_KEY_QUEUED_MESSAGES) || '[]');
-        currentQueue.push(reply);
-        localStorage.setItem(STORAGE_KEY_QUEUED_MESSAGES, JSON.stringify(currentQueue));
-      }, 1500);
-    }
-  },
-
-  async getMessagesForUser(username: string): Promise<Message[]> {
-    const queue: Message[] = JSON.parse(localStorage.getItem(STORAGE_KEY_QUEUED_MESSAGES) || '[]');
-    return queue.filter(m => m.recipient === username);
   }
-};
+}
+
+export const signalingService = new SignalingService();
