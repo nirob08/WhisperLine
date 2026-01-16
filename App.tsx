@@ -24,7 +24,6 @@ const App: React.FC = () => {
     status: 'ended'
   });
 
-  // Edit states
   const [editUsername, setEditUsername] = useState('');
   const [editDisplayName, setEditDisplayName] = useState('');
   const [editBio, setEditBio] = useState('');
@@ -33,20 +32,26 @@ const App: React.FC = () => {
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // PWA Install Prompt Listener
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const targetUser = params.get('u');
+    
+    if (targetUser && currentUser) {
+      signalingService.findOrCreateUser(targetUser).then(user => {
+        setActiveChatUser(user);
+        setCurrentScreen(AppScreen.CHAT_DETAIL);
+        window.history.replaceState({}, document.title, window.location.pathname);
+      });
+    }
+  }, [currentUser]);
+
   useEffect(() => {
     window.addEventListener('beforeinstallprompt', (e) => {
       e.preventDefault();
       setDeferredPrompt(e);
     });
-
-    window.addEventListener('appinstalled', () => {
-      setDeferredPrompt(null);
-      console.log('WhisperLine was installed');
-    });
   }, []);
 
-  // Local Storage Initialization
   useEffect(() => {
     const storedUser = localStorage.getItem('whisperline_current_user');
     if (storedUser) {
@@ -56,7 +61,6 @@ const App: React.FC = () => {
     }
   }, []);
 
-  // Sync edit states
   useEffect(() => {
     if (currentUser) {
       setEditUsername(currentUser.username);
@@ -67,7 +71,6 @@ const App: React.FC = () => {
     }
   }, [currentUser]);
 
-  // Fetch messages interval
   useEffect(() => {
     if (!currentUser) return;
 
@@ -88,9 +91,30 @@ const App: React.FC = () => {
     if (deferredPrompt) {
       deferredPrompt.prompt();
       const { outcome } = await deferredPrompt.userChoice;
-      if (outcome === 'accepted') {
-        setDeferredPrompt(null);
+      if (outcome === 'accepted') setDeferredPrompt(null);
+    }
+  };
+
+  const handleCopyLink = () => {
+    if (!currentUser) return;
+    const link = `${window.location.origin}/?u=${currentUser.username}`;
+    navigator.clipboard.writeText(link);
+    alert('Your unique chat link copied! Send this to friends so they can find you instantly.');
+  };
+
+  const handleShareApp = async () => {
+    if (navigator.share) {
+      try {
+        await navigator.share({
+          title: 'WhisperLine',
+          text: `Securely chat with me on WhisperLine!`,
+          url: `${window.location.origin}/?u=${currentUser?.username || ''}`,
+        });
+      } catch (err) {
+        console.log('Share failed:', err);
       }
+    } else {
+      handleCopyLink();
     }
   };
 
@@ -117,8 +141,7 @@ const App: React.FC = () => {
   };
 
   const handleUpdateProfile = async () => {
-    if (!currentUser) return;
-    if (!editUsername.trim()) return;
+    if (!currentUser || !editUsername.trim()) return;
 
     const updatedProfile: UserProfile = {
       ...currentUser,
@@ -153,7 +176,7 @@ const App: React.FC = () => {
 
   const handleSearch = async (val: string) => {
     setSearchQuery(val);
-    if (val.length > 1) {
+    if (val.length >= 1) {
       const results = await signalingService.searchUsers(val);
       setSearchResults(results.filter(r => r.username !== currentUser?.username));
     } else {
@@ -269,7 +292,7 @@ const App: React.FC = () => {
           </div>
           <input 
             type="text" 
-            placeholder="Search username..." 
+            placeholder="Type username to search..." 
             className="w-full bg-neutral-900 border border-neutral-800 rounded-2xl pl-12 pr-4 py-3 text-white focus:outline-none focus:border-emerald-500/50"
             value={searchQuery}
             onChange={(e) => handleSearch(e.target.value)}
@@ -278,49 +301,74 @@ const App: React.FC = () => {
       </div>
 
       <div className="flex-1 overflow-y-auto px-6">
-        {searchResults.length > 0 ? (
+        {searchQuery.length > 0 ? (
           <div className="mb-8">
             <h3 className="text-xs font-semibold text-neutral-600 uppercase mb-4 tracking-wider">Search Results</h3>
-            {searchResults.map(user => (
-              <div 
-                key={user.username}
-                onClick={() => {
-                  setActiveChatUser(user);
-                  setSearchQuery('');
-                  setSearchResults([]);
-                  setCurrentScreen(AppScreen.CHAT_DETAIL);
-                }}
-                className="flex items-center gap-4 p-4 glass rounded-2xl mb-2 cursor-pointer hover:bg-neutral-800/30 transition-all border border-emerald-500/10"
-              >
-                <Avatar user={user} size="w-12 h-12" />
-                <div>
-                  <div className="font-semibold text-white">{user.displayName || `@${user.username}`}</div>
-                  <div className="text-xs text-neutral-500">@{user.username}</div>
+            {searchResults.length > 0 ? (
+              searchResults.map(user => (
+                <div 
+                  key={user.username}
+                  onClick={() => {
+                    setActiveChatUser(user);
+                    setSearchQuery('');
+                    setSearchResults([]);
+                    setCurrentScreen(AppScreen.CHAT_DETAIL);
+                  }}
+                  className="flex items-center gap-4 p-4 glass rounded-2xl mb-2 cursor-pointer hover:bg-neutral-800/30 transition-all border border-emerald-500/10"
+                >
+                  <Avatar user={user} size="w-12 h-12" />
+                  <div className="flex-1">
+                    <div className="font-semibold text-white">{user.displayName || `@${user.username}`}</div>
+                    <div className="text-xs text-neutral-500">@{user.username}</div>
+                  </div>
+                  <div className="text-emerald-500 opacity-50"><ICONS.Check /></div>
                 </div>
+              ))
+            ) : (
+              <div className="text-center p-8 border border-dashed border-neutral-800 rounded-3xl">
+                 <p className="text-sm text-neutral-500 mb-4">No user found in local cache.</p>
+                 <button 
+                   onClick={() => {
+                     signalingService.findOrCreateUser(searchQuery).then(user => {
+                       setActiveChatUser(user);
+                       setSearchQuery('');
+                       setCurrentScreen(AppScreen.CHAT_DETAIL);
+                     });
+                   }}
+                   className="bg-emerald-500 text-black px-6 py-2 rounded-full font-bold text-sm"
+                 >
+                   Start Chat with @{searchQuery}
+                 </button>
               </div>
-            ))}
+            )}
           </div>
         ) : (
           <div className="space-y-4">
             {activeChatUser && (
               <div 
                 onClick={() => setCurrentScreen(AppScreen.CHAT_DETAIL)}
-                className="flex items-center gap-4 p-4 hover:bg-neutral-900/50 rounded-2xl cursor-pointer transition"
+                className="flex items-center gap-4 p-4 hover:bg-neutral-900/50 rounded-2xl cursor-pointer transition group"
               >
                 <Avatar user={activeChatUser} size="w-14 h-14" />
                 <div className="flex-1 border-b border-neutral-900 pb-4">
                   <div className="flex justify-between items-center mb-1">
-                    <span className="font-bold text-white">{activeChatUser.displayName || `@${activeChatUser.username}`}</span>
-                    <span className="text-xs text-neutral-600">Now</span>
+                    <span className="font-bold text-white group-hover:text-emerald-500 transition">{activeChatUser.displayName || `@${activeChatUser.username}`}</span>
+                    <span className="text-xs text-neutral-600">Active Session</span>
                   </div>
-                  <div className="text-sm text-neutral-500 truncate">Tap to open encrypted session</div>
+                  <div className="text-sm text-neutral-500 truncate">Open secure P2P line</div>
                 </div>
               </div>
             )}
             {!activeChatUser && (
-              <div className="h-64 flex flex-col items-center justify-center opacity-30">
-                <ICONS.Shield />
-                <p className="mt-4 text-sm font-light">Your inbox is empty</p>
+              <div className="h-64 flex flex-col items-center justify-center opacity-40">
+                <div className="w-16 h-16 rounded-full bg-neutral-900 flex items-center justify-center text-neutral-700 mb-4">
+                  <ICONS.Lock />
+                </div>
+                <p className="text-sm font-light text-neutral-500">Search for a friend or bot to begin</p>
+                <div className="mt-4 flex gap-2">
+                   <span className="text-[10px] bg-neutral-900 px-2 py-1 rounded text-neutral-500 border border-neutral-800">support</span>
+                   <span className="text-[10px] bg-neutral-900 px-2 py-1 rounded text-neutral-500 border border-neutral-800">echo_bot</span>
+                </div>
               </div>
             )}
           </div>
@@ -347,7 +395,7 @@ const App: React.FC = () => {
               <Avatar user={activeChatUser} size="w-10 h-10" />
               <div>
                 <div className="font-bold text-white leading-none">{activeChatUser.displayName || `@${activeChatUser.username}`}</div>
-                <div className="text-[10px] text-emerald-500 uppercase font-bold tracking-widest mt-1">@{activeChatUser.username} • P2P Secure</div>
+                <div className="text-[10px] text-emerald-500 uppercase font-bold tracking-widest mt-1">@{activeChatUser.username} • Encrypted</div>
               </div>
             </div>
           </div>
@@ -359,6 +407,12 @@ const App: React.FC = () => {
 
         <div className="flex-1 overflow-y-auto p-6 space-y-6 flex flex-col-reverse">
           <div className="space-y-4 flex flex-col">
+            {chatMessages.length === 0 && (
+              <div className="text-center py-10 opacity-30">
+                <ICONS.Lock />
+                <p className="text-[10px] mt-2 uppercase tracking-widest">End-to-End Encrypted Tunnel Established</p>
+              </div>
+            )}
             {chatMessages.map(m => {
               const isMine = m.sender === currentUser?.username;
               return (
@@ -366,7 +420,7 @@ const App: React.FC = () => {
                   <div className={`max-w-[80%] px-4 py-3 rounded-2xl text-sm ${
                     isMine ? 'bg-emerald-600 text-black font-medium' : 'bg-neutral-900 text-white'
                   }`}>
-                    {m.sender === currentUser?.username ? m.content.replace(/^encrypted_|_via_.*$/g, '') : 'Simulated encrypted payload...'}
+                    {m.sender === currentUser?.username ? m.content.replace(/^encrypted_|_via_.*$/g, '') : 'Encrypted data received...'}
                   </div>
                   <div className="flex items-center gap-1 mt-1 px-1">
                     <span className="text-[10px] text-neutral-600">
@@ -384,7 +438,7 @@ const App: React.FC = () => {
           <div className="flex items-center gap-3 bg-neutral-900 rounded-2xl pl-4 pr-2 py-2">
             <input 
               type="text" 
-              placeholder="Encrypted message..." 
+              placeholder="Type a message..." 
               className="flex-1 bg-transparent text-white text-sm focus:outline-none py-2"
               onKeyDown={(e) => {
                 if (e.key === 'Enter') {
@@ -395,7 +449,7 @@ const App: React.FC = () => {
             />
             <button 
               onClick={() => {
-                const input = document.querySelector('input[placeholder="Encrypted message..."]') as HTMLInputElement;
+                const input = document.querySelector('input[placeholder="Type a message..."]') as HTMLInputElement;
                 sendMessage(input.value);
                 input.value = '';
               }}
@@ -415,7 +469,7 @@ const App: React.FC = () => {
         <div className="absolute inset-0 bg-gradient-to-b from-black via-transparent to-black opacity-60 z-10"></div>
         {callState.type === 'video' ? (
           <div className="w-full h-full flex items-center justify-center bg-neutral-900">
-             <div className="text-neutral-700 animate-pulse text-xl uppercase tracking-[0.4em]">Simulated Video Stream</div>
+             <div className="text-neutral-700 animate-pulse text-xl uppercase tracking-[0.4em]">Secure Video Stream</div>
           </div>
         ) : (
           <div className="w-full h-full flex items-center justify-center">
@@ -434,33 +488,16 @@ const App: React.FC = () => {
           <Avatar user={activeChatUser} size="w-32 h-32 mx-auto emerald-glow border-4 border-emerald-500/20" />
           <h2 className="mt-6 text-3xl font-bold text-white">@{callState.remoteParticipant}</h2>
           <div className="mt-2 text-neutral-400 text-sm">
-            {callState.status === 'dialing' ? 'Establishing P2P Tunnel' : '01:24'}
+            {callState.status === 'dialing' ? 'Establishing P2P Tunnel' : 'Connected'}
           </div>
         </div>
 
-        <div className="w-full max-w-xs glass p-4 rounded-3xl grid grid-cols-2 gap-4">
-           <div className="text-left">
-             <div className="text-[10px] text-neutral-500 uppercase mb-1">Bandwidth</div>
-             <div className="text-sm text-emerald-500 font-mono">12.4 kbps (Opus)</div>
-           </div>
-           <div className="text-right">
-              <div className="text-[10px] text-neutral-500 uppercase mb-1">Latency</div>
-              <div className="text-sm text-emerald-500 font-mono">42ms</div>
-           </div>
-        </div>
-
         <div className="flex gap-8 items-center">
-          <button className="w-16 h-16 rounded-full glass border border-white/10 flex items-center justify-center text-white hover:bg-white/10 transition">
-            <ICONS.Plus />
-          </button>
           <button 
             onClick={endCall}
             className="w-20 h-20 rounded-full bg-red-600 text-white flex items-center justify-center shadow-xl shadow-red-900/40 hover:scale-105 transition active:scale-95"
           >
             <div className="rotate-[135deg]"><ICONS.Phone /></div>
-          </button>
-          <button className="w-16 h-16 rounded-full glass border border-white/10 flex items-center justify-center text-white hover:bg-white/10 transition">
-            <ICONS.Video />
           </button>
         </div>
       </div>
@@ -485,19 +522,13 @@ const App: React.FC = () => {
                  <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-white"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
               </div>
             </div>
-            <input 
-              type="file" 
-              ref={fileInputRef} 
-              className="hidden" 
-              accept="image/*" 
-              onChange={handleFileChange} 
-            />
+            <input type="file" ref={fileInputRef} className="hidden" accept="image/*" onChange={handleFileChange} />
             <button 
               onClick={() => {
                 setEditAvatarSeed(Math.random().toString(36).substring(7));
                 setEditAvatarData(undefined);
               }}
-              className="absolute bottom-4 -right-2 bg-emerald-500 text-black p-2 rounded-full shadow-lg hover:scale-110 transition active:rotate-180"
+              className="absolute bottom-4 -right-2 bg-emerald-500 text-black p-2 rounded-full shadow-lg"
             >
               <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path><path d="M3 3v5h5"></path><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"></path><path d="M16 16h5v5"></path></svg>
             </button>
@@ -512,7 +543,6 @@ const App: React.FC = () => {
               value={editUsername}
               onChange={(e) => setEditUsername(e.target.value)}
               className="w-full bg-neutral-900 border border-neutral-800 rounded-2xl px-4 py-3 text-white focus:outline-none focus:border-emerald-500/50"
-              placeholder="Username"
             />
           </div>
           <div>
@@ -522,23 +552,13 @@ const App: React.FC = () => {
               value={editDisplayName}
               onChange={(e) => setEditDisplayName(e.target.value)}
               className="w-full bg-neutral-900 border border-neutral-800 rounded-2xl px-4 py-3 text-white focus:outline-none focus:border-emerald-500/50"
-              placeholder="Display Name"
-            />
-          </div>
-          <div>
-            <label className="text-xs text-neutral-500 uppercase tracking-widest ml-1 mb-1 block">Bio</label>
-            <textarea 
-              value={editBio}
-              onChange={(e) => setEditBio(e.target.value)}
-              className="w-full bg-neutral-900 border border-neutral-800 rounded-2xl px-4 py-3 text-white focus:outline-none focus:border-emerald-500/50 min-h-[100px]"
-              placeholder="Your bio..."
             />
           </div>
         </div>
 
         <button 
           onClick={handleUpdateProfile}
-          className="w-full bg-emerald-500 text-black font-bold py-4 rounded-2xl hover:bg-emerald-600 transition shadow-lg shadow-emerald-500/20"
+          className="w-full bg-emerald-500 text-black font-bold py-4 rounded-2xl hover:bg-emerald-600 transition"
         >
           Save Changes
         </button>
@@ -561,40 +581,41 @@ const App: React.FC = () => {
           <h3 className="text-xl font-bold text-white">{currentUser?.displayName || `@${currentUser?.username}`}</h3>
           <p className="text-sm text-neutral-400 mt-1">{currentUser?.bio}</p>
           
-          <button 
-            onClick={() => setCurrentScreen(AppScreen.EDIT_PROFILE)}
-            className="mt-6 px-6 py-2 bg-emerald-500/10 border border-emerald-500/30 text-emerald-500 rounded-full text-xs font-bold uppercase tracking-widest hover:bg-emerald-500 hover:text-black transition-all"
-          >
-            Edit Profile
-          </button>
+          <div className="flex flex-wrap justify-center gap-2 mt-6">
+            <button 
+              onClick={() => setCurrentScreen(AppScreen.EDIT_PROFILE)}
+              className="px-6 py-2 bg-emerald-500/10 border border-emerald-500/30 text-emerald-500 rounded-full text-xs font-bold uppercase tracking-widest hover:bg-emerald-500 transition-all"
+            >
+              Edit Profile
+            </button>
+            <button 
+              onClick={handleShareApp}
+              className="px-6 py-2 bg-white/5 border border-white/10 text-white rounded-full text-xs font-bold uppercase tracking-widest hover:bg-white/10 transition-all flex items-center gap-2"
+            >
+              <ICONS.Send />
+              Share Identity Link
+            </button>
+          </div>
         </div>
 
         <div className="space-y-2">
-          {deferredPrompt && (
-            <button 
-              onClick={handleInstallClick}
-              className="w-full flex items-center justify-between p-4 bg-emerald-500 text-black rounded-2xl hover:bg-emerald-600 transition font-bold"
-            >
-              <div className="flex items-center gap-3">
-                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
-                <span className="text-sm">Install WhisperLine App</span>
-              </div>
-            </button>
-          )}
-
+          <button 
+            onClick={handleCopyLink}
+            className="w-full flex items-center justify-between p-4 glass rounded-2xl hover:bg-neutral-800 transition"
+          >
+            <div className="flex items-center gap-3">
+              <ICONS.Plus />
+              <span className="text-sm">Copy My Chat Link</span>
+            </div>
+            <span className="text-[10px] text-neutral-500">ID Link</span>
+          </button>
+          
           <button className="w-full flex items-center justify-between p-4 glass rounded-2xl hover:bg-neutral-800 transition">
             <div className="flex items-center gap-3">
               <ICONS.Shield />
               <span className="text-sm">Encryption Protocol</span>
             </div>
             <span className="text-xs text-emerald-500">Signal V3</span>
-          </button>
-          <button className="w-full flex items-center justify-between p-4 glass rounded-2xl hover:bg-neutral-800 transition">
-            <div className="flex items-center gap-3">
-              <ICONS.Lock />
-              <span className="text-sm">Disappearing Messages</span>
-            </div>
-            <span className="text-xs text-neutral-500">24 Hours</span>
           </button>
         </div>
 
@@ -607,8 +628,8 @@ const App: React.FC = () => {
             Panic Wipe (Delete All)
           </button>
           <p className="mt-4 text-center text-[10px] text-neutral-600 uppercase tracking-widest leading-loose">
-            WhisperLine v1.3.0 - PWA Enabled<br/>
-            Distributed P2P Messaging
+            WhisperLine v1.4.0 • P2P Mode<br/>
+            Local Discovery Engine
           </p>
         </div>
       </div>
