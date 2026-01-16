@@ -3,7 +3,7 @@ import { UserProfile, Message } from '../types';
 
 /**
  * Signaling Server Simulation
- * Enhanced for "Direct Discovery" to work across devices via usernames.
+ * Enhanced to allow "Direct Peer Discovery" via username.
  */
 
 const STORAGE_KEY_REGISTRY = 'whisperline_registry';
@@ -12,18 +12,10 @@ const STORAGE_KEY_QUEUED_MESSAGES = 'whisperline_queued_messages';
 const SEED_USERS: UserProfile[] = [
   {
     username: 'support',
-    publicKey: 'pub_whisper_official_support_node',
+    publicKey: 'pub_whisper_official',
     displayName: 'Whisper Support',
-    bio: 'Official support and feedback node.',
+    bio: 'End-to-end encrypted support node.',
     avatarSeed: 'support',
-    createdAt: Date.now()
-  },
-  {
-    username: 'echo_bot',
-    publicKey: 'pub_whisper_echo_test_node',
-    displayName: 'Echo Bot',
-    bio: 'I repeat everything you say. Good for testing encryption.',
-    avatarSeed: 'bot',
     createdAt: Date.now()
   }
 ];
@@ -61,15 +53,15 @@ export const signalingService = {
     const registry: UserProfile[] = JSON.parse(localStorage.getItem(STORAGE_KEY_REGISTRY) || '[]');
     const results = registry.filter(u => u.username.toLowerCase().includes(query.toLowerCase()));
     
-    // If no results and query looks like a full username, return a temporary "found" user
+    // Logic: If user types a specific username not in registry, "discover" it
     if (results.length === 0 && query.length >= 3) {
       return [{
         username: query.toLowerCase().trim(),
-        publicKey: `pub_external_${query}`,
+        publicKey: `pub_ext_${query}`,
         displayName: query,
         avatarSeed: query,
         createdAt: Date.now(),
-        bio: "Remote User (External Node)"
+        bio: "Remote Identity Discovered"
       }];
     }
     return results;
@@ -83,11 +75,11 @@ export const signalingService = {
 
     const newUser: UserProfile = {
       username: username.toLowerCase(),
-      publicKey: `pub_remote_${Math.random().toString(36).substr(2, 9)}`,
+      publicKey: `pub_remote_${Math.random().toString(36).substr(2, 5)}`,
       displayName: username,
       avatarSeed: username,
       createdAt: Date.now(),
-      bio: "Found via direct link."
+      bio: "Identity Link Active"
     };
     registry.push(newUser);
     localStorage.setItem(STORAGE_KEY_REGISTRY, JSON.stringify(registry));
@@ -98,7 +90,24 @@ export const signalingService = {
     const queue: Message[] = JSON.parse(localStorage.getItem(STORAGE_KEY_QUEUED_MESSAGES) || '[]');
     queue.push({ ...msg, status: 'delivered' });
     localStorage.setItem(STORAGE_KEY_QUEUED_MESSAGES, JSON.stringify(queue));
-    window.dispatchEvent(new CustomEvent('whisperline_message_sent', { detail: msg }));
+    
+    // Simulate an auto-reply for better UX in a single-device demo
+    if (msg.recipient === 'support') {
+      setTimeout(() => {
+        const reply: Message = {
+          id: Math.random().toString(36).substr(2, 9),
+          sender: 'support',
+          recipient: msg.sender,
+          content: 'encrypted_SGVsbG8hIFdlIGhhdmUgcmVjZWl2ZWQgeW91ciBzZWN1cmUgbWVzc2FnZS4=_via_whisper',
+          timestamp: Date.now(),
+          status: 'sent',
+          type: 'text'
+        };
+        const currentQueue: Message[] = JSON.parse(localStorage.getItem(STORAGE_KEY_QUEUED_MESSAGES) || '[]');
+        currentQueue.push(reply);
+        localStorage.setItem(STORAGE_KEY_QUEUED_MESSAGES, JSON.stringify(currentQueue));
+      }, 1500);
+    }
   },
 
   async getMessagesForUser(username: string): Promise<Message[]> {

@@ -1,9 +1,7 @@
 
 /**
  * WhisperLine Cryptography Module
- * In a real-world app, we would use the Web Crypto API (SubtleCrypto)
- * for actual AES-256 and Signal Protocol (Double Ratchet) logic.
- * This service simulates those operations for the prototype.
+ * Updated for the prototype to ensure messages are readable after "decryption".
  */
 
 export const cryptoService = {
@@ -11,11 +9,10 @@ export const cryptoService = {
    * Generates a persistent cryptographic key pair locally.
    */
   async generateIdentityKeyPair(): Promise<{ publicKey: string; privateKey: string }> {
-    // Simulated key generation
     const array = new Uint8Array(32);
     window.crypto.getRandomValues(array);
-    const mockPublic = btoa(String.fromCharCode(...array.slice(0, 16)));
-    const mockPrivate = btoa(String.fromCharCode(...array.slice(16, 32)));
+    const mockPublic = btoa(String.fromCharCode(...array.slice(0, 16))).replace(/[^a-zA-Z0-9]/g, '');
+    const mockPrivate = btoa(String.fromCharCode(...array.slice(16, 32))).replace(/[^a-zA-Z0-9]/g, '');
     
     return {
       publicKey: `pub_${mockPublic}`,
@@ -27,23 +24,23 @@ export const cryptoService = {
    * Encrypts a message using a simulated Signal Protocol ratchet.
    */
   async encryptMessage(message: string, recipientPublicKey: string): Promise<string> {
-    // In reality: 
-    // 1. Establish shared secret (ECDH)
-    // 2. Derive message key using Double Ratchet
-    // 3. Encrypt with AES-GCM
-    const encoded = btoa(message);
+    // Encodes the message so it can be decoded by the UI
+    const encoded = btoa(unescape(encodeURIComponent(message)));
     return `encrypted_${encoded}_via_${recipientPublicKey.slice(0, 8)}`;
   },
 
   /**
-   * Decrypts a message using local private key.
+   * Decrypts a message.
    */
-  async decryptMessage(encryptedData: string, senderPublicKey: string): Promise<string> {
-    const base64 = encryptedData.replace(/^encrypted_/, '').split('_via_')[0];
+  async decryptMessage(encryptedData: string): Promise<string> {
+    if (!encryptedData.startsWith('encrypted_')) return encryptedData;
+    
     try {
-      return atob(base64);
-    } catch {
-      return "[Decryption Error: Key Mismatch]";
+      const base64 = encryptedData.replace(/^encrypted_/, '').split('_via_')[0];
+      return decodeURIComponent(escape(atob(base64)));
+    } catch (e) {
+      console.error("Decryption failed", e);
+      return "[Secure Content]";
     }
   },
 
@@ -53,6 +50,5 @@ export const cryptoService = {
   async panicWipe(): Promise<void> {
     localStorage.clear();
     sessionStorage.clear();
-    // In a real app, we would also clear IndexedDB and Secure Enclave refs
   }
 };

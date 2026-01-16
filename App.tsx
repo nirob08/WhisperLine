@@ -1,11 +1,10 @@
 
 import React, { useState, useEffect, useRef } from 'react';
-import { AppScreen, UserProfile, Message, CallState, NetworkStats } from './types';
+import { AppScreen, UserProfile, Message, CallState } from './types';
 import { cryptoService } from './services/crypto';
 import { signalingService } from './services/signaling';
-import { ICONS, COLORS } from './constants';
+import { ICONS } from './constants';
 
-// Helper: Seeded Avatar Generator (Fallback)
 const getAvatarUrl = (seed: string) => `https://api.dicebear.com/7.x/pixel-art/svg?seed=${seed}`;
 
 const App: React.FC = () => {
@@ -15,7 +14,8 @@ const App: React.FC = () => {
   const [messages, setMessages] = useState<Message[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<UserProfile[]>([]);
-  const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
+  const [decryptedMessages, setDecryptedMessages] = useState<Record<string, string>>({});
+  
   const [callState, setCallState] = useState<CallState>({
     isActive: false,
     type: null,
@@ -24,18 +24,14 @@ const App: React.FC = () => {
     status: 'ended'
   });
 
-  const [editUsername, setEditUsername] = useState('');
+  // Profile Edit State
   const [editDisplayName, setEditDisplayName] = useState('');
   const [editBio, setEditBio] = useState('');
-  const [editAvatarSeed, setEditAvatarSeed] = useState('');
-  const [editAvatarData, setEditAvatarData] = useState<string | undefined>(undefined);
 
-  const fileInputRef = useRef<HTMLInputElement>(null);
-
+  // Handle URL Deep Linking
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const targetUser = params.get('u');
-    
     if (targetUser && currentUser) {
       signalingService.findOrCreateUser(targetUser).then(user => {
         setActiveChatUser(user);
@@ -45,41 +41,29 @@ const App: React.FC = () => {
     }
   }, [currentUser]);
 
-  useEffect(() => {
-    window.addEventListener('beforeinstallprompt', (e) => {
-      e.preventDefault();
-      setDeferredPrompt(e);
-    });
-  }, []);
-
+  // Load user session
   useEffect(() => {
     const storedUser = localStorage.getItem('whisperline_current_user');
     if (storedUser) {
       const parsed = JSON.parse(storedUser);
       setCurrentUser(parsed);
+      setEditDisplayName(parsed.displayName || '');
+      setEditBio(parsed.bio || '');
       setCurrentScreen(AppScreen.CHAT_LIST);
     }
   }, []);
 
-  useEffect(() => {
-    if (currentUser) {
-      setEditUsername(currentUser.username);
-      setEditDisplayName(currentUser.displayName || '');
-      setEditBio(currentUser.bio || '');
-      setEditAvatarSeed(currentUser.avatarSeed || '');
-      setEditAvatarData(currentUser.avatarData);
-    }
-  }, [currentUser]);
-
+  // Poll for messages and decrypt them
   useEffect(() => {
     if (!currentUser) return;
 
     const fetchInterval = setInterval(async () => {
-      const newMessages = await signalingService.getMessagesForUser(currentUser.username);
-      if (newMessages.length > 0) {
+      const incoming = await signalingService.getMessagesForUser(currentUser.username);
+      if (incoming.length > 0) {
         setMessages(prev => {
-          const ids = new Set(prev.map(m => m.id));
-          return [...prev, ...newMessages.filter(m => !ids.has(m.id))];
+          const existingIds = new Set(prev.map(m => m.id));
+          const filtered = incoming.filter(m => !existingIds.has(m.id));
+          return [...prev, ...filtered];
         });
       }
     }, 2000);
@@ -87,36 +71,21 @@ const App: React.FC = () => {
     return () => clearInterval(fetchInterval);
   }, [currentUser]);
 
-  const handleInstallClick = async () => {
-    if (deferredPrompt) {
-      deferredPrompt.prompt();
-      const { outcome } = await deferredPrompt.userChoice;
-      if (outcome === 'accepted') setDeferredPrompt(null);
-    }
-  };
-
-  const handleCopyLink = () => {
-    if (!currentUser) return;
-    const link = `${window.location.origin}/?u=${currentUser.username}`;
-    navigator.clipboard.writeText(link);
-    alert('Your unique chat link copied! Send this to friends so they can find you instantly.');
-  };
-
-  const handleShareApp = async () => {
-    if (navigator.share) {
-      try {
-        await navigator.share({
-          title: 'WhisperLine',
-          text: `Securely chat with me on WhisperLine!`,
-          url: `${window.location.origin}/?u=${currentUser?.username || ''}`,
-        });
-      } catch (err) {
-        console.log('Share failed:', err);
+  // Logic to decrypt messages whenever message list updates
+  useEffect(() => {
+    const decryptAll = async () => {
+      const newDecrypted: Record<string, string> = { ...decryptedMessages };
+      let changed = false;
+      for (const msg of messages) {
+        if (!newDecrypted[msg.id]) {
+          newDecrypted[msg.id] = await cryptoService.decryptMessage(msg.content);
+          changed = true;
+        }
       }
-    } else {
-      handleCopyLink();
-    }
-  };
+      if (changed) setDecryptedMessages(newDecrypted);
+    };
+    decryptAll();
+  }, [messages]);
 
   const handleRegister = async (username: string) => {
     if (!username.trim()) return;
@@ -124,10 +93,10 @@ const App: React.FC = () => {
     const profile: UserProfile = {
       username: username.toLowerCase().trim(),
       publicKey,
-      avatarSeed: Math.random().toString(36).substring(7),
+      avatarSeed: username,
       createdAt: Date.now(),
-      displayName: username.trim(),
-      bio: "Whispering through the line..."
+      displayName: username,
+      bio: "Identity verified via WhisperLine."
     };
 
     const success = await signalingService.registerUser(profile);
@@ -136,41 +105,7 @@ const App: React.FC = () => {
       localStorage.setItem('whisperline_current_user', JSON.stringify(profile));
       setCurrentScreen(AppScreen.CHAT_LIST);
     } else {
-      alert("Username already taken. Please choose another.");
-    }
-  };
-
-  const handleUpdateProfile = async () => {
-    if (!currentUser || !editUsername.trim()) return;
-
-    const updatedProfile: UserProfile = {
-      ...currentUser,
-      username: editUsername.toLowerCase().trim(),
-      displayName: editDisplayName.trim(),
-      bio: editBio.trim(),
-      avatarSeed: editAvatarSeed,
-      avatarData: editAvatarData
-    };
-
-    const success = await signalingService.updateUser(currentUser.username, updatedProfile);
-    if (success) {
-      setCurrentUser(updatedProfile);
-      localStorage.setItem('whisperline_current_user', JSON.stringify(updatedProfile));
-      setCurrentScreen(AppScreen.SETTINGS);
-    } else {
-      alert("Username already taken. Please choose another.");
-    }
-  };
-
-  const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (file) {
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        setEditAvatarData(reader.result as string);
-        setEditAvatarSeed('');
-      };
-      reader.readAsDataURL(file);
+      alert("Username is locally reserved. Try another.");
     }
   };
 
@@ -211,6 +146,11 @@ const App: React.FC = () => {
       status: 'dialing'
     });
     setCurrentScreen(AppScreen.CALL);
+    
+    // Auto "connect" after 2 seconds for demo
+    setTimeout(() => {
+      setCallState(prev => ({ ...prev, status: 'connected' }));
+    }, 2000);
   };
 
   const endCall = () => {
@@ -218,51 +158,34 @@ const App: React.FC = () => {
     setCurrentScreen(AppScreen.CHAT_DETAIL);
   };
 
-  const handlePanicWipe = async () => {
-    if (confirm("DANGER: This will instantly delete all local identity keys and history. Continue?")) {
-      await cryptoService.panicWipe();
-      window.location.reload();
-    }
-  };
-
   const Avatar = ({ user, size = "w-10 h-10" }: { user: UserProfile | null, size?: string }) => {
-    if (!user) return <div className={`${size} rounded-full bg-neutral-800 animate-pulse`} />;
-    const src = user.avatarData || getAvatarUrl(user.avatarSeed || 'default');
+    const src = user?.avatarData || getAvatarUrl(user?.avatarSeed || 'default');
     return <img src={src} className={`${size} rounded-full border border-neutral-800 bg-neutral-900 object-cover`} alt="avatar" />;
   };
 
+  // UI Renderers
   const renderOnboarding = () => (
     <div className="flex flex-col items-center justify-center h-screen p-8 text-center bg-black">
       <div className="mb-12">
-        <div className="relative inline-block">
-          <div className="w-24 h-24 rounded-full bg-emerald-500/20 flex items-center justify-center emerald-glow border border-emerald-500/50">
-            <ICONS.Shield />
-          </div>
-          <div className="absolute top-0 right-0 w-6 h-6 bg-emerald-500 rounded-full border-4 border-black pulse-animation"></div>
+        <div className="w-20 h-20 rounded-full bg-emerald-500/20 flex items-center justify-center emerald-glow mx-auto mb-6">
+          <ICONS.Shield />
         </div>
-        <h1 className="mt-8 text-4xl font-bold tracking-tight text-white">WhisperLine</h1>
-        <p className="mt-4 text-neutral-400 font-light max-w-xs">
-          Low-latency, privacy-first communication. No phone number, no trackers.
-        </p>
+        <h1 className="text-4xl font-bold text-white tracking-tight">WhisperLine</h1>
+        <p className="mt-2 text-neutral-500 text-sm">Create your decentralized identity.</p>
       </div>
-
       <div className="w-full max-w-sm glass rounded-3xl p-6">
         <input 
           type="text" 
-          placeholder="Choose a username" 
-          className="w-full bg-neutral-900 border border-neutral-800 rounded-xl px-4 py-4 text-white focus:outline-none focus:ring-2 focus:ring-emerald-500/50 mb-4"
+          placeholder="Enter a username..." 
+          className="w-full bg-neutral-900 border border-neutral-800 rounded-xl px-4 py-4 text-white focus:outline-none focus:ring-1 focus:ring-emerald-500/50 mb-4"
           onKeyDown={(e) => e.key === 'Enter' && handleRegister((e.target as HTMLInputElement).value)}
         />
         <button 
-          onClick={() => {
-            const input = document.querySelector('input') as HTMLInputElement;
-            handleRegister(input.value);
-          }}
-          className="w-full bg-emerald-500 hover:bg-emerald-600 text-black font-semibold rounded-xl py-4 transition-all"
+          onClick={() => handleRegister((document.querySelector('input') as HTMLInputElement).value)}
+          className="w-full bg-emerald-500 hover:bg-emerald-600 text-black font-bold rounded-xl py-4 transition-all"
         >
-          Secure Entry
+          Begin Session
         </button>
-        <p className="mt-4 text-xs text-neutral-500 uppercase tracking-widest">Local Key Generation Only</p>
       </div>
     </div>
   );
@@ -270,30 +193,19 @@ const App: React.FC = () => {
   const renderChatList = () => (
     <div className="flex flex-col h-screen bg-black">
       <header className="p-6 flex items-center justify-between">
-        <div>
-          <h2 className="text-2xl font-bold text-white">Messages</h2>
-          <div className="flex items-center gap-2 text-xs text-emerald-500">
-            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
-            End-to-End Encrypted
-          </div>
-        </div>
-        <button 
-          onClick={() => setCurrentScreen(AppScreen.SETTINGS)}
-          className="w-10 h-10 rounded-full glass flex items-center justify-center text-neutral-400 hover:text-white transition"
-        >
+        <h2 className="text-2xl font-bold text-white">Messages</h2>
+        <button onClick={() => setCurrentScreen(AppScreen.SETTINGS)} className="w-10 h-10 rounded-full glass flex items-center justify-center text-neutral-400">
           <ICONS.Settings />
         </button>
       </header>
 
       <div className="px-6 pb-4">
         <div className="relative">
-          <div className="absolute inset-y-0 left-4 flex items-center pointer-events-none text-neutral-500">
-            <ICONS.Search />
-          </div>
+          <div className="absolute inset-y-0 left-4 flex items-center text-neutral-500"><ICONS.Search /></div>
           <input 
             type="text" 
-            placeholder="Type username to search..." 
-            className="w-full bg-neutral-900 border border-neutral-800 rounded-2xl pl-12 pr-4 py-3 text-white focus:outline-none focus:border-emerald-500/50"
+            placeholder="Search by username..." 
+            className="w-full bg-neutral-900 border border-neutral-800 rounded-2xl pl-12 pr-4 py-3 text-white focus:outline-none"
             value={searchQuery}
             onChange={(e) => handleSearch(e.target.value)}
           />
@@ -302,75 +214,41 @@ const App: React.FC = () => {
 
       <div className="flex-1 overflow-y-auto px-6">
         {searchQuery.length > 0 ? (
-          <div className="mb-8">
-            <h3 className="text-xs font-semibold text-neutral-600 uppercase mb-4 tracking-wider">Search Results</h3>
-            {searchResults.length > 0 ? (
-              searchResults.map(user => (
-                <div 
-                  key={user.username}
-                  onClick={() => {
-                    setActiveChatUser(user);
-                    setSearchQuery('');
-                    setSearchResults([]);
-                    setCurrentScreen(AppScreen.CHAT_DETAIL);
-                  }}
-                  className="flex items-center gap-4 p-4 glass rounded-2xl mb-2 cursor-pointer hover:bg-neutral-800/30 transition-all border border-emerald-500/10"
-                >
-                  <Avatar user={user} size="w-12 h-12" />
-                  <div className="flex-1">
-                    <div className="font-semibold text-white">{user.displayName || `@${user.username}`}</div>
-                    <div className="text-xs text-neutral-500">@{user.username}</div>
-                  </div>
-                  <div className="text-emerald-500 opacity-50"><ICONS.Check /></div>
+          <div className="space-y-2">
+            {searchResults.map(user => (
+              <div 
+                key={user.username}
+                onClick={() => {
+                  setActiveChatUser(user);
+                  setSearchQuery('');
+                  setCurrentScreen(AppScreen.CHAT_DETAIL);
+                }}
+                className="flex items-center gap-4 p-4 glass rounded-2xl cursor-pointer hover:bg-neutral-800/50 transition-all"
+              >
+                <Avatar user={user} size="w-12 h-12" />
+                <div className="flex-1">
+                  <div className="font-bold text-white">@{user.username}</div>
+                  <div className="text-xs text-neutral-500">{user.bio}</div>
                 </div>
-              ))
-            ) : (
-              <div className="text-center p-8 border border-dashed border-neutral-800 rounded-3xl">
-                 <p className="text-sm text-neutral-500 mb-4">No user found in local cache.</p>
-                 <button 
-                   onClick={() => {
-                     signalingService.findOrCreateUser(searchQuery).then(user => {
-                       setActiveChatUser(user);
-                       setSearchQuery('');
-                       setCurrentScreen(AppScreen.CHAT_DETAIL);
-                     });
-                   }}
-                   className="bg-emerald-500 text-black px-6 py-2 rounded-full font-bold text-sm"
-                 >
-                   Start Chat with @{searchQuery}
-                 </button>
+                <div className="text-emerald-500"><ICONS.Plus /></div>
               </div>
-            )}
+            ))}
           </div>
         ) : (
           <div className="space-y-4">
             {activeChatUser && (
-              <div 
-                onClick={() => setCurrentScreen(AppScreen.CHAT_DETAIL)}
-                className="flex items-center gap-4 p-4 hover:bg-neutral-900/50 rounded-2xl cursor-pointer transition group"
-              >
+              <div onClick={() => setCurrentScreen(AppScreen.CHAT_DETAIL)} className="flex items-center gap-4 p-4 hover:bg-neutral-900/50 rounded-2xl cursor-pointer transition">
                 <Avatar user={activeChatUser} size="w-14 h-14" />
                 <div className="flex-1 border-b border-neutral-900 pb-4">
                   <div className="flex justify-between items-center mb-1">
-                    <span className="font-bold text-white group-hover:text-emerald-500 transition">{activeChatUser.displayName || `@${activeChatUser.username}`}</span>
-                    <span className="text-xs text-neutral-600">Active Session</span>
+                    <span className="font-bold text-white">@{activeChatUser.username}</span>
+                    <span className="text-[10px] text-neutral-600">Active Node</span>
                   </div>
-                  <div className="text-sm text-neutral-500 truncate">Open secure P2P line</div>
+                  <div className="text-sm text-neutral-500 truncate">Tap to resume secure session</div>
                 </div>
               </div>
             )}
-            {!activeChatUser && (
-              <div className="h-64 flex flex-col items-center justify-center opacity-40">
-                <div className="w-16 h-16 rounded-full bg-neutral-900 flex items-center justify-center text-neutral-700 mb-4">
-                  <ICONS.Lock />
-                </div>
-                <p className="text-sm font-light text-neutral-500">Search for a friend or bot to begin</p>
-                <div className="mt-4 flex gap-2">
-                   <span className="text-[10px] bg-neutral-900 px-2 py-1 rounded text-neutral-500 border border-neutral-800">support</span>
-                   <span className="text-[10px] bg-neutral-900 px-2 py-1 rounded text-neutral-500 border border-neutral-800">echo_bot</span>
-                </div>
-              </div>
-            )}
+            {!activeChatUser && <p className="text-center text-neutral-700 text-sm mt-20">No active sessions. Search for a friend.</p>}
           </div>
         )}
       </div>
@@ -388,58 +266,40 @@ const App: React.FC = () => {
       <div className="flex flex-col h-screen bg-black">
         <header className="p-4 border-b border-neutral-900 flex items-center justify-between glass">
           <div className="flex items-center gap-3">
-            <button onClick={() => setCurrentScreen(AppScreen.CHAT_LIST)} className="p-2 text-neutral-400 hover:text-white transition">
-              <ICONS.ArrowLeft />
-            </button>
-            <div className="flex items-center gap-3">
-              <Avatar user={activeChatUser} size="w-10 h-10" />
-              <div>
-                <div className="font-bold text-white leading-none">{activeChatUser.displayName || `@${activeChatUser.username}`}</div>
-                <div className="text-[10px] text-emerald-500 uppercase font-bold tracking-widest mt-1">@{activeChatUser.username} • Encrypted</div>
-              </div>
+            <button onClick={() => setCurrentScreen(AppScreen.CHAT_LIST)} className="p-2 text-neutral-400"><ICONS.ArrowLeft /></button>
+            <Avatar user={activeChatUser} size="w-10 h-10" />
+            <div>
+              <div className="font-bold text-white text-sm">@{activeChatUser.username}</div>
+              <div className="text-[9px] text-emerald-500 uppercase tracking-widest font-bold">End-to-End Encrypted</div>
             </div>
           </div>
-          <div className="flex items-center gap-2">
-            <button onClick={() => startCall('audio', activeChatUser)} className="p-2 text-neutral-400 hover:text-emerald-500 transition"><ICONS.Phone /></button>
-            <button onClick={() => startCall('video', activeChatUser)} className="p-2 text-neutral-400 hover:text-emerald-500 transition"><ICONS.Video /></button>
+          <div className="flex gap-1">
+            <button onClick={() => startCall('audio', activeChatUser)} className="p-2 text-neutral-400 hover:text-emerald-500"><ICONS.Phone /></button>
+            <button onClick={() => startCall('video', activeChatUser)} className="p-2 text-neutral-400 hover:text-emerald-500"><ICONS.Video /></button>
           </div>
         </header>
 
-        <div className="flex-1 overflow-y-auto p-6 space-y-6 flex flex-col-reverse">
-          <div className="space-y-4 flex flex-col">
-            {chatMessages.length === 0 && (
-              <div className="text-center py-10 opacity-30">
-                <ICONS.Lock />
-                <p className="text-[10px] mt-2 uppercase tracking-widest">End-to-End Encrypted Tunnel Established</p>
-              </div>
-            )}
-            {chatMessages.map(m => {
-              const isMine = m.sender === currentUser?.username;
-              return (
-                <div key={m.id} className={`flex flex-col ${isMine ? 'items-end' : 'items-start'}`}>
-                  <div className={`max-w-[80%] px-4 py-3 rounded-2xl text-sm ${
-                    isMine ? 'bg-emerald-600 text-black font-medium' : 'bg-neutral-900 text-white'
-                  }`}>
-                    {m.sender === currentUser?.username ? m.content.replace(/^encrypted_|_via_.*$/g, '') : 'Encrypted data received...'}
-                  </div>
-                  <div className="flex items-center gap-1 mt-1 px-1">
-                    <span className="text-[10px] text-neutral-600">
-                      {new Date(m.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                    </span>
-                    {isMine && <span className="text-emerald-500"><ICONS.Check /></span>}
-                  </div>
+        <div className="flex-1 overflow-y-auto p-4 space-y-4 flex flex-col-reverse">
+          <div className="flex flex-col space-y-3">
+            {chatMessages.map(m => (
+              <div key={m.id} className={`flex flex-col ${m.sender === currentUser?.username ? 'items-end' : 'items-start'}`}>
+                <div className={`max-w-[85%] px-4 py-2.5 rounded-2xl text-[13px] ${
+                  m.sender === currentUser?.username ? 'bg-emerald-600 text-black font-medium' : 'bg-neutral-900 text-white'
+                }`}>
+                  {decryptedMessages[m.id] || "Decrypting..."}
                 </div>
-              );
-            })}
+                <div className="text-[9px] text-neutral-600 mt-1 px-1">{new Date(m.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</div>
+              </div>
+            ))}
           </div>
         </div>
 
-        <div className="p-4 border-t border-neutral-900 glass">
-          <div className="flex items-center gap-3 bg-neutral-900 rounded-2xl pl-4 pr-2 py-2">
+        <div className="p-4 glass">
+          <div className="flex items-center gap-2 bg-neutral-900 rounded-2xl px-3 py-1">
             <input 
               type="text" 
-              placeholder="Type a message..." 
-              className="flex-1 bg-transparent text-white text-sm focus:outline-none py-2"
+              placeholder="Secure message..." 
+              className="flex-1 bg-transparent text-white text-sm py-3 focus:outline-none"
               onKeyDown={(e) => {
                 if (e.key === 'Enter') {
                   sendMessage((e.target as HTMLInputElement).value);
@@ -447,16 +307,11 @@ const App: React.FC = () => {
                 }
               }}
             />
-            <button 
-              onClick={() => {
-                const input = document.querySelector('input[placeholder="Type a message..."]') as HTMLInputElement;
-                sendMessage(input.value);
-                input.value = '';
-              }}
-              className="p-2 bg-emerald-500 text-black rounded-xl hover:bg-emerald-600 transition"
-            >
-              <ICONS.Send />
-            </button>
+            <button onClick={() => {
+              const input = document.querySelector('input[placeholder="Secure message..."]') as HTMLInputElement;
+              sendMessage(input.value);
+              input.value = '';
+            }} className="p-2 text-emerald-500"><ICONS.Send /></button>
           </div>
         </div>
       </div>
@@ -464,103 +319,21 @@ const App: React.FC = () => {
   };
 
   const renderCall = () => (
-    <div className="flex flex-col h-screen bg-black relative overflow-hidden">
-      <div className="absolute inset-0 z-0">
-        <div className="absolute inset-0 bg-gradient-to-b from-black via-transparent to-black opacity-60 z-10"></div>
-        {callState.type === 'video' ? (
-          <div className="w-full h-full flex items-center justify-center bg-neutral-900">
-             <div className="text-neutral-700 animate-pulse text-xl uppercase tracking-[0.4em]">Secure Video Stream</div>
-          </div>
-        ) : (
-          <div className="w-full h-full flex items-center justify-center">
-             <div className="w-64 h-64 rounded-full border border-emerald-500/20 flex items-center justify-center pulse-animation">
-               <div className="w-48 h-48 rounded-full border border-emerald-500/40 flex items-center justify-center pulse-animation" style={{ animationDelay: '0.5s' }}></div>
-             </div>
-          </div>
-        )}
+    <div className="flex flex-col h-screen bg-black items-center justify-between p-12 text-center">
+      <div className="mt-10">
+        <div className="text-emerald-500 text-[10px] font-bold uppercase tracking-[0.3em] mb-8">
+          {callState.status === 'dialing' ? 'Establishing Tunnel...' : 'Session Connected'}
+        </div>
+        <div className="w-32 h-32 rounded-full border-2 border-emerald-500/30 mx-auto flex items-center justify-center pulse-animation">
+          <Avatar user={activeChatUser} size="w-24 h-24" />
+        </div>
+        <h2 className="text-3xl font-bold text-white mt-8">@{activeChatUser?.username}</h2>
+        <p className="text-neutral-500 text-sm mt-2">{callState.status === 'dialing' ? 'Requesting Handshake...' : '00:04'}</p>
       </div>
 
-      <div className="z-20 flex flex-col h-full p-8 items-center justify-between text-center">
-        <div>
-          <div className="text-emerald-500 text-xs font-bold uppercase tracking-widest mb-4">
-            {callState.status === 'dialing' ? 'Dialing Secure Node...' : 'Connected • AES-256'}
-          </div>
-          <Avatar user={activeChatUser} size="w-32 h-32 mx-auto emerald-glow border-4 border-emerald-500/20" />
-          <h2 className="mt-6 text-3xl font-bold text-white">@{callState.remoteParticipant}</h2>
-          <div className="mt-2 text-neutral-400 text-sm">
-            {callState.status === 'dialing' ? 'Establishing P2P Tunnel' : 'Connected'}
-          </div>
-        </div>
-
-        <div className="flex gap-8 items-center">
-          <button 
-            onClick={endCall}
-            className="w-20 h-20 rounded-full bg-red-600 text-white flex items-center justify-center shadow-xl shadow-red-900/40 hover:scale-105 transition active:scale-95"
-          >
-            <div className="rotate-[135deg]"><ICONS.Phone /></div>
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-
-  const renderEditProfile = () => (
-    <div className="flex flex-col h-screen bg-black">
-      <header className="p-6 flex items-center gap-4 border-b border-neutral-900">
-        <button onClick={() => setCurrentScreen(AppScreen.SETTINGS)} className="p-2 text-neutral-400">
-          <ICONS.ArrowLeft />
-        </button>
-        <h2 className="text-2xl font-bold text-white">Edit Profile</h2>
-      </header>
-
-      <div className="flex-1 overflow-y-auto px-6 py-6 space-y-6">
-        <div className="flex flex-col items-center">
-          <div className="relative group">
-            <div className="w-32 h-32 rounded-full border-4 border-emerald-500/20 mb-4 bg-neutral-900 overflow-hidden relative">
-              <img src={editAvatarData || getAvatarUrl(editAvatarSeed)} className="w-full h-full object-cover" alt="edit avatar" />
-              <div className="absolute inset-0 bg-black/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer" onClick={() => fileInputRef.current?.click()}>
-                 <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-white"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
-              </div>
-            </div>
-            <input type="file" ref={fileInputRef} className="hidden" accept="image/*" onChange={handleFileChange} />
-            <button 
-              onClick={() => {
-                setEditAvatarSeed(Math.random().toString(36).substring(7));
-                setEditAvatarData(undefined);
-              }}
-              className="absolute bottom-4 -right-2 bg-emerald-500 text-black p-2 rounded-full shadow-lg"
-            >
-              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path><path d="M3 3v5h5"></path><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"></path><path d="M16 16h5v5"></path></svg>
-            </button>
-          </div>
-        </div>
-
-        <div className="space-y-4">
-          <div>
-            <label className="text-xs text-neutral-500 uppercase tracking-widest ml-1 mb-1 block">Username</label>
-            <input 
-              type="text" 
-              value={editUsername}
-              onChange={(e) => setEditUsername(e.target.value)}
-              className="w-full bg-neutral-900 border border-neutral-800 rounded-2xl px-4 py-3 text-white focus:outline-none focus:border-emerald-500/50"
-            />
-          </div>
-          <div>
-            <label className="text-xs text-neutral-500 uppercase tracking-widest ml-1 mb-1 block">Display Name</label>
-            <input 
-              type="text" 
-              value={editDisplayName}
-              onChange={(e) => setEditDisplayName(e.target.value)}
-              className="w-full bg-neutral-900 border border-neutral-800 rounded-2xl px-4 py-3 text-white focus:outline-none focus:border-emerald-500/50"
-            />
-          </div>
-        </div>
-
-        <button 
-          onClick={handleUpdateProfile}
-          className="w-full bg-emerald-500 text-black font-bold py-4 rounded-2xl hover:bg-emerald-600 transition"
-        >
-          Save Changes
+      <div className="w-full max-w-xs flex justify-center gap-10">
+        <button onClick={endCall} className="w-16 h-16 rounded-full bg-red-600 text-white flex items-center justify-center rotate-[135deg] shadow-2xl shadow-red-900/50 hover:scale-105 transition">
+          <ICONS.Phone />
         </button>
       </div>
     </div>
@@ -569,81 +342,30 @@ const App: React.FC = () => {
   const renderSettings = () => (
     <div className="flex flex-col h-screen bg-black">
       <header className="p-6 flex items-center gap-4">
-        <button onClick={() => setCurrentScreen(AppScreen.CHAT_LIST)} className="p-2 text-neutral-400">
-          <ICONS.ArrowLeft />
-        </button>
-        <h2 className="text-2xl font-bold text-white">Identity Node</h2>
+        <button onClick={() => setCurrentScreen(AppScreen.CHAT_LIST)} className="p-2 text-neutral-400"><ICONS.ArrowLeft /></button>
+        <h2 className="text-2xl font-bold text-white">Settings</h2>
       </header>
-
-      <div className="flex-1 px-6 space-y-6 overflow-y-auto">
-        <div className="p-6 glass rounded-3xl text-center">
-          <Avatar user={currentUser} size="w-24 h-24 mx-auto border-2 border-emerald-500/50 mb-4" />
-          <h3 className="text-xl font-bold text-white">{currentUser?.displayName || `@${currentUser?.username}`}</h3>
-          <p className="text-sm text-neutral-400 mt-1">{currentUser?.bio}</p>
-          
-          <div className="flex flex-wrap justify-center gap-2 mt-6">
-            <button 
-              onClick={() => setCurrentScreen(AppScreen.EDIT_PROFILE)}
-              className="px-6 py-2 bg-emerald-500/10 border border-emerald-500/30 text-emerald-500 rounded-full text-xs font-bold uppercase tracking-widest hover:bg-emerald-500 transition-all"
-            >
-              Edit Profile
-            </button>
-            <button 
-              onClick={handleShareApp}
-              className="px-6 py-2 bg-white/5 border border-white/10 text-white rounded-full text-xs font-bold uppercase tracking-widest hover:bg-white/10 transition-all flex items-center gap-2"
-            >
-              <ICONS.Send />
-              Share Identity Link
-            </button>
-          </div>
-        </div>
-
-        <div className="space-y-2">
-          <button 
-            onClick={handleCopyLink}
-            className="w-full flex items-center justify-between p-4 glass rounded-2xl hover:bg-neutral-800 transition"
-          >
-            <div className="flex items-center gap-3">
-              <ICONS.Plus />
-              <span className="text-sm">Copy My Chat Link</span>
-            </div>
-            <span className="text-[10px] text-neutral-500">ID Link</span>
+      <div className="p-6 text-center">
+        <Avatar user={currentUser} size="w-24 h-24 mx-auto border-2 border-emerald-500/20 mb-4" />
+        <h3 className="text-xl font-bold text-white">@{currentUser?.username}</h3>
+        <p className="text-xs text-neutral-500 mt-2">Public Key: {currentUser?.publicKey.slice(0, 15)}...</p>
+        
+        <div className="mt-10 space-y-3">
+          <button onClick={() => cryptoService.panicWipe().then(() => window.location.reload())} className="w-full bg-red-900/20 text-red-500 font-bold py-4 rounded-2xl border border-red-500/20 hover:bg-red-500 hover:text-white transition">
+            Panic Wipe (Delete Account)
           </button>
-          
-          <button className="w-full flex items-center justify-between p-4 glass rounded-2xl hover:bg-neutral-800 transition">
-            <div className="flex items-center gap-3">
-              <ICONS.Shield />
-              <span className="text-sm">Encryption Protocol</span>
-            </div>
-            <span className="text-xs text-emerald-500">Signal V3</span>
-          </button>
-        </div>
-
-        <div className="pt-4 pb-8">
-          <button 
-            onClick={handlePanicWipe}
-            className="w-full bg-red-900/20 border border-red-500/30 text-red-500 font-semibold rounded-2xl py-4 hover:bg-red-500 hover:text-white transition-all flex items-center justify-center gap-2"
-          >
-            <ICONS.Shield />
-            Panic Wipe (Delete All)
-          </button>
-          <p className="mt-4 text-center text-[10px] text-neutral-600 uppercase tracking-widest leading-loose">
-            WhisperLine v1.4.0 • P2P Mode<br/>
-            Local Discovery Engine
-          </p>
         </div>
       </div>
     </div>
   );
 
   return (
-    <div className="max-w-md mx-auto h-screen border-x border-neutral-900 shadow-2xl overflow-hidden bg-black">
+    <div className="max-w-md mx-auto h-screen border-x border-neutral-900 shadow-2xl overflow-hidden bg-black text-white">
       {currentScreen === AppScreen.ONBOARDING && renderOnboarding()}
       {currentScreen === AppScreen.CHAT_LIST && renderChatList()}
       {currentScreen === AppScreen.CHAT_DETAIL && renderChatDetail()}
       {currentScreen === AppScreen.CALL && renderCall()}
       {currentScreen === AppScreen.SETTINGS && renderSettings()}
-      {currentScreen === AppScreen.EDIT_PROFILE && renderEditProfile()}
     </div>
   );
 };
